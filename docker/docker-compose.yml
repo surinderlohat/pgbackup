@@ -1,0 +1,60 @@
+version: "3.9"
+
+# =============================================================================
+# PostgreSQL in Docker + pgbackup (pgBackRest edition) on host
+#
+# pgBackRest archive-push runs INSIDE the container via archive_command,
+# writing directly to the host-mounted repository path.
+# pg_basebackup (used by pgbackrest backup) connects via exposed port.
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    container_name: myapp-postgres
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+      POSTGRES_DB: myapp_production
+
+    ports:
+      - "127.0.0.1:5432:5432"       # Localhost only
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # pgBackRest config and repo mounted into container for archive-push
+      - /etc/pgbackrest:/etc/pgbackrest:ro
+      - /var/backups/pgbackrest:/var/backups/pgbackrest
+      - /var/log/pgbackrest:/var/log/pgbackrest
+      # Mount pgbackrest binary from host
+      - /usr/bin/pgbackrest:/usr/bin/pgbackrest:ro
+      - ./postgres/conf/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+
+    secrets:
+      - pg_password
+
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d myapp_production"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+secrets:
+  pg_password:
+    file: ./secrets/pg_password.txt
+
+volumes:
+  pgdata:
+    driver: local

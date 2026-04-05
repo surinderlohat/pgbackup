@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pgbackup v2 — PostgreSQL Backup CLI (pgBackRest edition)
+#
+# Install once. Use for any project via --config.
+#
+# Usage:
+#   pgbackup <command> [--config /etc/pgbackup/<project>.env] [options]
+#
+# Commands:
+#   init        Generate starter config for a new project
+#   setup       Initialise pgBackRest stanza for a project (run once per project)
+#   wal-setup   Print postgresql.conf lines to enable WAL archiving
+#   backup      Run a backup now (--type full|diff|incr)
+#   restore     Restore to latest or a point-in-time
+#   check       Run health checks
+#   status      Show backup inventory and repository info
+#   verify      Run pgBackRest repository verification
+#   enable      Install systemd timers for automated scheduling
+#   disable     Remove systemd timers
+#   version     Print version
+#   help        Show this help
+# =============================================================================
+
+set -euo pipefail
+
+PGBACKUP_VERSION="2.0.0"
+PGBACKUP_BIN="$(realpath "${BASH_SOURCE[0]}")"
+PGBACKUP_HOME="$(cd "$(dirname "$PGBACKUP_BIN")/.." && pwd)"
+PGBACKUP_LIB="${PGBACKUP_HOME}/lib/pgbackup"
+PGBACKUP_TEMPLATES="${PGBACKUP_HOME}/share/pgbackup/templates"
+
+export PGBACKUP_VERSION
+
+if [[ ! -f "${PGBACKUP_LIB}/common.sh" ]]; then
+    echo "ERROR: pgbackup installation broken. Missing: ${PGBACKUP_LIB}/common.sh" >&2
+    exit 1
+fi
+source "${PGBACKUP_LIB}/common.sh"
+
+# --- Parse global flags ---
+COMMAND="${1:-help}"
+shift || true
+
+CONFIG_FILE=""
+REMAINING_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --config|-c) CONFIG_FILE="$2"; shift 2 ;;
+        *)           REMAINING_ARGS+=("$1"); shift ;;
+    esac
+done
+
+# ============================================================
+# Commands
+# ============================================================
+
+cmd_help() {
+    cat <<EOF
+pgbackup v${PGBACKUP_VERSION} — PostgreSQL Backup CLI (pgBackRest edition)
+
+USAGE
+  pgbackup <command> [--config /etc/pgbackup/<project>.env] [options]
+
+COMMANDS
+  init        Generate a starter config for a new project
+  setup       Initialise pgBackRest stanza (run once after init)
+  wal-setup   Print postgresql.conf snippet for WAL archiving
+  backup      Run a backup now
+              Options: --type full|diff|incr  (default: full)
+  restore     Restore DB to latest or a point in time
+              Options: --target-dir <dir>  --pitr "<timestamp>"
+                       --delta  --dry-run  --backup-set <label>
+  check       Run health checks (connectivity, WAL, recency, integrity)
+  status      Show backup inventory and repository info
+  verify      Run full pgBackRest repository verification
+  enable      Install & enable systemd timers  [sudo]
+  disable     Remove systemd timers            [sudo]
+  version     Print version
+  help        Show this help
+
+EXAMPLES
+  # New project setup
+  pgbackup init     --project myapp --output /etc/pgbackup/myapp.env
+  pgbackup wal-setup --config /etc/pgbackup/myapp.env
+  # (add lines to postgresql.conf, reload postgres)
+  sudo pgbackup setup  --config /etc/pgbackup/myapp.env
+  sudo pgbackup enable --config /etc/pgbackup/myapp.env
+
+  # Daily operations
+  pgbackup backup  --config /etc/pgbackup/myapp.env --type diff
+  pgbackup check   --config /etc/pgbackup/myapp.env
+  pgbackup status  --config /etc/pgbackup/myapp.env
+
+  # Recovery
+  pgbackup restore --config /etc/pgbackup/myapp.env \\
+                   --target-dir /var/lib/postgresql/16/recovered
+
+  pgbackup restore --config /etc/pgbackup/myapp.env \\
+                   --target-dir /var/lib/postgresql/16/recovered \\
+                   --pitr "2024-01-15 14:30:00+00"
+
+  # In-place recovery (only restore changed blocks — much faster)
+  pgbackup restore --config /etc/pgbackup/myapp.env \\
+                   --target-dir /var/lib/postgresql/16/main \\
+                   --delta
+
+Configs live in /etc/pgbackup/ — one .env file per project.
+EOF
+}
+
+cmd_version() {
+    echo "pgbackup v${PGBACKUP_VERSION} (pgBackRest edition)"
+    command -v pgbackrest &>/dev/null && pgbackrest version | head -1 || true
+}
+
+cmd_init() {
+    local project="" output=""
+    local args=("${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}")
+    while [[ ${#args[@]} -gt 0 ]]; do
+        case "${args[0]}" in
+            --project) project="${args[1]}"; args=("${args[@]:2}") ;;
+            --output)  output="${args[1]}";  args=("${args[@]:2}") ;;
+            *) echo "Unknown: ${args[0]}" >&2; exit 1 ;;
+        esac
+    done
+
+    [[ -z "$project" ]] && { echo "ERROR: --project is required" >&2; exit 1; }
+    output="${output:-/etc/pgbackup/${project}.env}"
+
+    if [[ -f "$output" ]]; then
+        echo "ERROR: Config already exists: $output" >&2; exit 1
+    fi
+
+    mkdir -p "$(dirname "$output")"
+    sed "s/PROJECT_NAME=\"myapp\"/PROJECT_NAME=\"${project}\"/" \
+        "${PGBACKUP_TEMPLATES}/backup.env.template" > "$output"
+    chmod 640 "$output"
+
+    echo "✓ Config created: $output"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Edit config:         nano $output"
+    echo "  2. Print WAL settings:  pgbackup wal-setup --config $output"
+    echo "  3. Add to postgresql.conf and reload PostgreSQL"
+    echo "  4. Init stanza:         sudo pgbackup setup --config $output"
+    echo "  5. Enable timers:       sudo pgbackup enable --config $output"
+    echo "  6. First backup:        sudo -u postgres pgbackup backup --config $output"
+}
+
+cmd_setup() {
+    require_config
+    exec "${PGBACKUP_LIB}/stanza_setup.sh" \
+        --config "$CONFIG_FILE" \
+        "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+}
+
+cmd_wal_setup() {
+    require_config
+    load_config "$CONFIG_FILE"
+    cat <<EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Add to postgresql.conf — project: ${PROJECT_NAME}
+Reload with: SELECT pg_reload_conf();
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# WAL Archiving (managed by pgbackup + pgBackRest)
+wal_level = replica
+archive_mode = on
+archive_command = 'pgbackrest --config=${PGBACKREST_CONF} --stanza=${STANZA} archive-push %p'
+archive_timeout = 300         # Max data loss = 5 minutes
+wal_keep_size = 1024          # 1GB local WAL buffer
+max_wal_senders = 3
+hot_standby = on
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Verify after reload:
+  pgbackup check --config ${CONFIG_FILE}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+}
+
+cmd_backup() {
+    require_config
+    exec "${PGBACKUP_LIB}/full_backup.sh" \
+        --config "$CONFIG_FILE" \
+        "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+}
+
+cmd_restore() {
+    require_config
+    exec "${PGBACKUP_LIB}/restore.sh" \
+        --config "$CONFIG_FILE" \
+        "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+}
+
+cmd_check() {
+    require_config
+    exec "${PGBACKUP_LIB}/check_backup.sh" \
+        --config "$CONFIG_FILE" \
+        "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+}
+
+cmd_status() {
+    require_config
+    load_config "$CONFIG_FILE"
+    ensure_dirs
+    check_deps
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo " pgbackup status: ${PROJECT_NAME}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    pgbr info --output=text
+
+    echo ""
+    echo "Repository: ${REPO_TYPE}${REPO_PATH:+ → $REPO_PATH}${REPO_S3_BUCKET:+ → s3://$REPO_S3_BUCKET}"
+    echo "Compression: ${COMPRESS_TYPE:-lz4}"
+    echo "Encryption:  ${ENCRYPT_ENABLED:-false}"
+
+    if [[ "${REPO_TYPE:-posix}" == "posix" ]]; then
+        echo ""
+        df -h "$REPO_PATH" | awk 'NR==2 {printf "Disk: %s used / %s total (%s)\n", $3, $2, $5}'
+    fi
+
+    echo ""
+    echo "Systemd timers:"
+    systemctl list-timers "pgbackup-${PROJECT_NAME}*" --no-legend 2>/dev/null \
+        | awk '{printf "  %-45s next: %s %s\n", $NF, $1, $2}' \
+        || echo "  (none — run: sudo pgbackup enable --config $CONFIG_FILE)"
+    echo ""
+}
+
+cmd_verify() {
+    require_config
+    load_config "$CONFIG_FILE"
+    check_deps
+    log_info "Running pgBackRest repository verification for: ${PROJECT_NAME}"
+    log_info "This may take a while for large repositories..."
+    pgbr verify --log-level-console=info
+}
+
+cmd_enable() {
+    require_root "enable"
+    require_config
+    load_config "$CONFIG_FILE"
+    source "${PGBACKUP_LIB}/systemd_install.sh"
+    systemd_install "$PROJECT_NAME" "$CONFIG_FILE"
+}
+
+cmd_disable() {
+    require_root "disable"
+    require_config
+    load_config "$CONFIG_FILE"
+    source "${PGBACKUP_LIB}/systemd_install.sh"
+    systemd_uninstall "$PROJECT_NAME"
+}
+
+# ============================================================
+# Helpers
+# ============================================================
+require_config() {
+    if [[ -z "$CONFIG_FILE" ]]; then
+        echo "ERROR: --config is required for this command." >&2
+        echo "       pgbackup ${COMMAND} --config /etc/pgbackup/<project>.env" >&2
+        exit 1
+    fi
+    [[ ! -f "$CONFIG_FILE" ]] && { echo "ERROR: Not found: $CONFIG_FILE" >&2; exit 1; }
+}
+
+require_root() {
+    [[ $EUID -ne 0 ]] && {
+        echo "ERROR: 'pgbackup $1' requires root. Run: sudo pgbackup $1 ..." >&2
+        exit 1
+    }
+}
+
+# ============================================================
+# Dispatch
+# ============================================================
+case "$COMMAND" in
+    init)      cmd_init ;;
+    setup)     cmd_setup ;;
+    wal-setup) cmd_wal_setup ;;
+    backup)    cmd_backup ;;
+    restore)   cmd_restore ;;
+    check)     cmd_check ;;
+    status)    cmd_status ;;
+    verify)    cmd_verify ;;
+    enable)    cmd_enable ;;
+    disable)   cmd_disable ;;
+    version)   cmd_version ;;
+    help|--help|-h) cmd_help ;;
+    *)
+        echo "Unknown command: $COMMAND" >&2
+        echo "Run 'pgbackup help'" >&2
+        exit 1 ;;
+esac
