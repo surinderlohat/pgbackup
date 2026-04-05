@@ -73,7 +73,7 @@ install -m755 "${SRC}/src/pgbackup"               "${BIN_DIR}/pgbackup"
 for f in common.sh full_backup.sh restore.sh check_backup.sh \
           stanza_setup.sh systemd_install.sh; do
     if [[ -f "${SRC}/src/lib/${f}" ]]; then
-        install -m644 "${SRC}/src/lib/${f}" "${LIB_DIR}/${f}"
+        install -m755 "${SRC}/src/lib/${f}" "${LIB_DIR}/${f}"
         success "lib/${f}"
     else
         warn "Missing: src/lib/${f}"

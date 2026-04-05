@@ -17,12 +17,12 @@ install:
 	install -d -m755 $(BIN_DIR) $(LIB_DIR) $(TEMPLATES_DIR)
 	install -d -m750 $(DESTDIR)/etc/$(NAME)
 	install -m755 src/$(NAME)                        $(BIN_DIR)/$(NAME)
-	install -m644 src/lib/common.sh                  $(LIB_DIR)/
-	install -m644 src/lib/full_backup.sh             $(LIB_DIR)/
-	install -m644 src/lib/restore.sh                 $(LIB_DIR)/
-	install -m644 src/lib/check_backup.sh            $(LIB_DIR)/
-	install -m644 src/lib/stanza_setup.sh            $(LIB_DIR)/
-	install -m644 src/lib/systemd_install.sh         $(LIB_DIR)/
+	install -m755 src/lib/common.sh                  $(LIB_DIR)/
+	install -m755 src/lib/full_backup.sh             $(LIB_DIR)/
+	install -m755 src/lib/restore.sh                 $(LIB_DIR)/
+	install -m755 src/lib/check_backup.sh            $(LIB_DIR)/
+	install -m755 src/lib/stanza_setup.sh            $(LIB_DIR)/
+	install -m755 src/lib/systemd_install.sh         $(LIB_DIR)/
 	install -m644 templates/backup.env.template      $(TEMPLATES_DIR)/
 	@echo "✓ Installed. Run: pgbackup help"
 
@@ -42,7 +42,7 @@ deb:
 	@command -v dpkg-deb >/dev/null || { echo "Need dpkg-deb"; exit 1; }
 	mkdir -p $(BUILD_DIR)/deb/$(NAME)_$(VERSION)_all/{DEBIAN,usr/bin,usr/lib/$(NAME),usr/share/$(NAME)/templates,etc/$(NAME)}
 	install -m755 src/$(NAME) $(BUILD_DIR)/deb/$(NAME)_$(VERSION)_all/usr/bin/$(NAME)
-	install -m644 src/lib/*.sh $(BUILD_DIR)/deb/$(NAME)_$(VERSION)_all/usr/lib/$(NAME)/
+	install -m755 src/lib/*.sh $(BUILD_DIR)/deb/$(NAME)_$(VERSION)_all/usr/lib/$(NAME)/
 	install -m644 templates/backup.env.template $(BUILD_DIR)/deb/$(NAME)_$(VERSION)_all/usr/share/$(NAME)/templates/
 	printf "Package: $(NAME)\nVersion: $(VERSION)\nArchitecture: all\nDepends: pgbackrest, postgresql-client\nDescription: PostgreSQL Backup CLI (pgBackRest edition)\n" \
 	    > $(BUILD_DIR)/deb/$(NAME)_$(VERSION)_all/DEBIAN/control
@@ -54,6 +54,7 @@ deb:
 test:
 	@bash -n src/$(NAME) && echo "✓ pgbackup"
 	@for f in src/lib/*.sh; do bash -n "$$f" && echo "✓ $$f"; done
+	@for f in docker/*.sh; do bash -n "$$f" && echo "✓ $$f"; done
 
 clean:
 	rm -rf $(BUILD_DIR)

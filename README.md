@@ -161,13 +161,63 @@ pg_ctl -D /var/lib/postgresql/16/recovered start
 
 See `docker/docker-compose.yml`. The pgBackRest binary and config are bind-mounted into the container so `archive_command` can call it directly. The repository directory is also shared via volume mount.
 
+This example is intended to run from Linux or WSL2 Ubuntu, not directly from native Windows PowerShell.
+
 ```bash
 # One-time setup for Docker host
 sudo ./docker/setup-docker-host.sh --project myapp
+
+# Set a real password for the postgres container
+nano docker/secrets/pg_password.txt
+
 docker compose up -d
 sudo pgbackup setup  --config /etc/pgbackup/myapp.env
 sudo pgbackup enable --config /etc/pgbackup/myapp.env
 ```
+
+If your WSL image has the older standalone Compose binary, replace `docker compose` with `docker-compose`.
+
+### WSL2 Smoke Test
+
+This is the fastest trust-building path on a Windows machine:
+
+```bash
+# inside WSL2 Ubuntu
+sudo apt update
+sudo apt install -y postgresql-client pgbackrest docker.io docker-compose
+sudo ./install.sh
+sudo ./docker/setup-docker-host.sh --project myapp
+nano docker/secrets/pg_password.txt
+pgbackup init --project myapp --output /etc/pgbackup/myapp.env
+nano /etc/pgbackup/myapp.env
+./docker/smoke-test.sh
+```
+
+Recommended config values for the Docker smoke test:
+
+```bash
+PG_HOST="127.0.0.1"
+PG_PORT="5432"
+PG_USER="postgres"
+PG_DATABASE="myapp_production"
+PG_DATA_DIR="/var/lib/postgresql/data"
+REPO_TYPE="posix"
+REPO_PATH="/var/backups/pgbackrest/${PROJECT_NAME}"
+```
+
+What the smoke test does:
+
+1. Starts the PostgreSQL Docker container.
+2. Waits for PostgreSQL to accept connections.
+3. Writes sample data.
+4. Runs `pgbackup setup`.
+5. Runs a full backup.
+6. Runs `pgbackup check`.
+7. Restores into `/tmp/<project>-restore`.
+
+If all of that works, you have validated the most important trust path: connect, backup, verify, and restore.
+
+The bundled Docker `pg_hba.conf` trusts localhost-only connections for smoke testing. Do not use that exact authentication policy unchanged for production.
 
 ---
 
